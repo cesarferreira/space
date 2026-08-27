@@ -1,0 +1,8 @@
+/target
+.worktrees/
+.superpowers/
+Cargo.lock
+.DS_Store
+*.log
+__pycache__/
+*.pyc
