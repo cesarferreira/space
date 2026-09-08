@@ -1,5 +1,5 @@
 [package]
-name = "space"
+name = "space-cli"
 version = "0.1.0"
 edition = "2024"
 rust-version = "1.85"
@@ -7,6 +7,18 @@ description = "Explain disk usage in human terms"
 license = "MIT"
 authors = ["Cesar Ferreira"]
 repository = "https://github.com/cesarferreira/space"
+homepage = "https://github.com/cesarferreira/space"
+readme = "README.md"
+keywords = ["disk", "storage", "df", "cli", "filesystem"]
+categories = ["command-line-utilities", "filesystem"]
+exclude = [
+    "docs/",
+    ".github/",
+]
+
+[lib]
+name = "space"
+path = "src/lib.rs"
 
 [[bin]]
 name = "space"

@@ -2,6 +2,14 @@
 
 **Disk usage explained in human terms.**
 
+<p>
+  <a href="https://github.com/cesarferreira/space/actions/workflows/rust-tests.yml">
+  <img alt="Tests" src="https://img.shields.io/github/actions/workflow/status/cesarferreira/space/rust-tests.yml?branch=main&logo=github&color=007ACC&label=tests"></a>
+  <a href="https://crates.io/crates/space-cli"><img alt="Crates.io" src="https://img.shields.io/crates/v/space-cli?color=blue"></a>
+  <a href="https://crates.io/crates/space-cli"><img src="https://img.shields.io/crates/d/space-cli.svg?color=blue" alt="Downloads"></a>
+  <img alt="License" src="https://img.shields.io/badge/license-MIT-green">
+</p>
+
 `df` shows filesystems. `space` shows the storage that matters, what is using it,
 and which mounts are merely operating-system machinery.
 
@@ -47,16 +55,19 @@ technically detailed but useless answer.
 
 ## Install
 
-The repository is currently private and the crate is not published. Install
-from a clone:
+```bash
+cargo install space-cli
+```
+
+That installs the `space` binary. Rust 1.85 or newer is required.
+
+### From source
 
 ```bash
 git clone git@github.com:cesarferreira/space.git
 cd space
 cargo install --path .
 ```
-
-Rust 1.85 or newer is required.
 
 ## Usage
 
