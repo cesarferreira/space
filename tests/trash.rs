@@ -103,6 +103,52 @@ fn flat_trash_empties_every_entry() {
     fs::remove_dir_all(home).unwrap();
 }
 
+#[cfg(target_os = "macos")]
+#[test]
+fn trash_permission_failure_requires_interactive_sudo_confirmation() {
+    use std::os::unix::fs::PermissionsExt;
+
+    let home = temp_dir("permission");
+    let trash = Trash::macos(&home);
+    let bundle = trash.path.join("Locked.app");
+    fs::create_dir_all(&bundle).unwrap();
+    let protected_file = bundle.join("file");
+    fs::write(&protected_file, b"data").unwrap();
+    let removable_file = trash.path.join("removable");
+    fs::write(&removable_file, b"data").unwrap();
+    fs::set_permissions(&bundle, fs::Permissions::from_mode(0o555)).unwrap();
+
+    let (result, out) = run(&trash, true, false, "");
+    let (declined, prompt) = run(&trash, true, true, "n\n");
+    let protected_remains = protected_file.exists();
+    let removable_remains = removable_file.exists();
+    if bundle.exists() {
+        fs::set_permissions(&bundle, fs::Permissions::from_mode(0o755)).unwrap();
+    }
+    fs::remove_dir_all(home).unwrap();
+
+    assert!(
+        result
+            .unwrap_err()
+            .to_string()
+            .contains("1 failed to delete")
+    );
+    assert!(out.contains("in a terminal to retry with sudo"), "{out}");
+    assert!(!out.contains("[y/N]"), "{out}");
+    assert!(
+        declined
+            .unwrap_err()
+            .to_string()
+            .contains("1 failed to delete")
+    );
+    assert!(
+        prompt.contains("Retry the permission-denied items with sudo?"),
+        "{prompt}"
+    );
+    assert!(protected_remains);
+    assert!(!removable_remains);
+}
+
 #[test]
 fn missing_trash_is_reported_as_empty() {
     let root = temp_dir("missing");

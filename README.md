@@ -156,6 +156,11 @@ space --empty-trash --yes
 Without a terminal on stdin, `--clean` and `--empty-trash` refuse to delete
 unless you pass `--yes`.
 
+On macOS, if deletion fails with permission errors, `space --empty-trash`
+offers to retry those items with `sudo` in an interactive terminal, including
+an SSH session with a terminal allocated. The retry requires its own confirmation
+even with `--yes`. Sudo may ask for your password.
+
 Some categories are never deleted by `space`, because they hold your files or
 are costly to get back: Downloads, Documents, Photos, Rustup, Android, Homebrew,
 Nix, Ollama, and Hugging Face. `space --why <category>` tells you how to clean

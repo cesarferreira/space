@@ -16,6 +16,7 @@ use std::{
     fs, io,
     io::{BufRead, Write},
     path::{Path, PathBuf},
+    process::Command,
 };
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -284,12 +285,50 @@ pub fn confirm_and_empty(
     }
 
     let mut failures = 0;
+    let mut permission_denied = Vec::new();
     for (trash, _, _) in &full {
         let outcome = trash.empty().map_err(|e| access_error(trash, e))?;
         for (path, e) in &outcome.failures {
             writeln!(out, "  could not delete {}: {e}", path.display())?;
+            if cfg!(target_os = "macos") && e.kind() == io::ErrorKind::PermissionDenied {
+                permission_denied.push(path.clone());
+            }
         }
         failures += outcome.failures.len();
+    }
+    if !permission_denied.is_empty() {
+        if interactive {
+            if confirm(
+                "Retry the permission-denied items with sudo? Sudo may ask for your password.",
+                false,
+                interactive,
+                input,
+                out,
+            )? {
+                for path in permission_denied {
+                    match Command::new("/usr/bin/sudo")
+                        .args(["--", "/bin/rm", "-rf", "--"])
+                        .arg(&path)
+                        .status()
+                    {
+                        Ok(status) if status.success() => failures -= 1,
+                        Ok(status) => {
+                            writeln!(out, "  sudo retry failed for {}: {status}", path.display())?;
+                            break;
+                        }
+                        Err(e) => {
+                            writeln!(out, "  sudo retry failed for {}: {e}", path.display())?;
+                            break;
+                        }
+                    }
+                }
+            }
+        } else {
+            writeln!(
+                out,
+                "  Run space --empty-trash in a terminal to retry with sudo."
+            )?;
+        }
     }
     if failures == 0 {
         writeln!(out, "Emptied the trash. Freed {}.", size_text(&total))?;
