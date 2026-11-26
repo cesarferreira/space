@@ -186,3 +186,40 @@ fn container_output_contains_only_meaningful_storage_roles() {
     );
     assert_eq!(report.hidden_mounts.len(), 4);
 }
+
+#[test]
+fn trash_group_has_no_redundant_child_line() {
+    let mut report = normalize_for_environment(container_discovery(), true);
+    report.storage[0].categories = vec![
+        category("Trash", "Trash", 1_200_000_000),
+        category("Other", "Other", 69_600_000_000),
+    ];
+    let text = render_with_options(
+        &report,
+        false,
+        RenderOptions {
+            ascii: false,
+            color: false,
+            width: 80,
+        },
+    );
+    assert!(text.contains("\n  Trash         1.2 GB\n  Other"), "{text}");
+}
+
+#[test]
+fn unreadable_categories_are_not_shown_as_zero_bytes() {
+    let mut report = normalize_for_environment(container_discovery(), true);
+    let mut trash = category("Trash", "Trash", 0);
+    trash.estimate = Estimate::lower_bound(0, 1);
+    report.storage[0].categories = vec![trash, category("Other", "Other", 70_800_000_000)];
+    let text = render_with_options(
+        &report,
+        false,
+        RenderOptions {
+            ascii: false,
+            color: false,
+            width: 80,
+        },
+    );
+    assert!(text.contains("  Trash         unreadable\n"), "{text}");
+}

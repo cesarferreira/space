@@ -172,6 +172,19 @@ fn volume_lines(
     format!("{heading}\n{detail}\n")
 }
 
+/// Nothing could be read, so a byte count of zero would be misleading.
+fn is_unreadable(category: &SemanticCategory) -> bool {
+    category.estimate.incomplete && category.estimate.bytes == 0
+}
+
+fn size_label(bytes: u64, unreadable: bool) -> String {
+    if unreadable {
+        "unreadable".into()
+    } else {
+        format_bytes(bytes)
+    }
+}
+
 fn category_lines(categories: &[SemanticCategory], options: RenderOptions, width: usize) -> String {
     let mut groups: BTreeMap<&str, Vec<&SemanticCategory>> = BTreeMap::new();
     let mut other = None;
@@ -186,7 +199,8 @@ fn category_lines(categories: &[SemanticCategory], options: RenderOptions, width
     for (group, mut children) in groups {
         children.sort_by_key(|child| std::cmp::Reverse(child.estimate.bytes));
         let total: u64 = children.iter().map(|child| child.estimate.bytes).sum();
-        let line = format!("  {group:<12}  {}", format_bytes(total));
+        let unreadable = children.iter().all(|child| is_unreadable(child));
+        let line = format!("  {group:<12}  {}", size_label(total, unreadable));
         let line = truncate(&line, width);
         let line = if options.color {
             line.replacen(group, &format!("\u{1b}[36m{group}\u{1b}[0m"), 1)
@@ -195,12 +209,16 @@ fn category_lines(categories: &[SemanticCategory], options: RenderOptions, width
         };
         out.push_str(&line);
         out.push('\n');
+        // A group with one same-named child (e.g. Trash) needs no detail line.
+        if matches!(children.as_slice(), [only] if only.name == group) {
+            continue;
+        }
         for child in children.into_iter().take(2) {
             let line = truncate(
                 &format!(
                     "    {:<10}  {}",
                     child.name,
-                    format_bytes(child.estimate.bytes)
+                    size_label(child.estimate.bytes, is_unreadable(child))
                 ),
                 width,
             );

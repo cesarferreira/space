@@ -7,3 +7,4 @@ pub mod output;
 pub mod platform;
 pub mod scan;
 pub mod storage;
+pub mod trash;

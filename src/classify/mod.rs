@@ -38,5 +38,12 @@ pub fn known_rules() -> Vec<Rule> {
         },
         confidence: Confidence::High,
     })
+    .chain(crate::trash::Trash::detect().map(|trash| Rule {
+        path: trash.path,
+        category: "Trash",
+        name: "Trash",
+        reclaimability: Reclaimability::PossiblyRemovable,
+        confidence: Confidence::High,
+    }))
     .collect()
 }

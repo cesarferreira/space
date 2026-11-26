@@ -27,6 +27,7 @@ Macintosh HD  645.5 / 994.7 GB  64.9%  ████████░░░░  349
   Personal      14.4 GB
     Documents   10.6 GB
     Downloads   3.8 GB
+  Trash         2.1 GB
   Other         625.3 GB
 
 Vorssaint     42.9 / 51.7 MB  83.1%  ██████████░░  8.8 MB free
@@ -94,6 +95,17 @@ Skip semantic directory scanning for an instant capacity overview:
 space --no-scan
 ```
 
+Empty the trash (`~/.Trash` on macOS, `~/.local/share/Trash` on Linux). `space`
+shows how many items and bytes it holds, then asks before deleting anything:
+
+```bash
+space --empty-trash
+space --empty-trash --yes   # skip the prompt, e.g. in scripts
+```
+
+Without a terminal on stdin, `--empty-trash` refuses to delete unless you pass
+`--yes`.
+
 Emit machine-readable output:
 
 ```bash
@@ -140,8 +152,14 @@ It does not pretend those locations are physical disks.
 
 ## Safety and permissions
 
-`space` is read-only. It does not delete data, repair filesystems, edit
-partitions, or require root for normal operation.
+`space` is read-only by default. The only command that deletes data is
+`--empty-trash`, and it asks for confirmation first. `space` does not repair
+filesystems, edit partitions, or require root for normal operation.
+
+The trash size appears with the other categories. On macOS, the Trash is
+protected by the system: if your terminal does not have Full Disk Access, the
+Trash shows as `unreadable` and cannot be emptied. Only the home trash is
+measured and emptied; per-volume trashes on external drives are not.
 
 Inaccessible paths produce lower-bound estimates rather than aborting the
 entire scan.

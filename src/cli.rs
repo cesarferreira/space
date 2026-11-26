@@ -29,6 +29,12 @@ pub struct Cli {
     pub json: bool,
     #[arg(long)]
     pub no_scan: bool,
+    /// Show the trash size and permanently delete its contents after confirmation
+    #[arg(long, conflicts_with_all = ["all", "why", "reclaimable", "json", "no_scan"])]
+    pub empty_trash: bool,
+    /// Skip the confirmation prompt of --empty-trash
+    #[arg(long, short = 'y', requires = "empty_trash")]
+    pub yes: bool,
 }
 
 impl Cli {

@@ -51,3 +51,44 @@ fn dumb_terminal_uses_ascii() {
         assert!(!text.contains(unicode), "found {unicode:?} in {text}");
     }
 }
+
+#[test]
+fn empty_trash_conflicts_with_report_modes() {
+    for args in [
+        vec!["--empty-trash", "--json"],
+        vec!["--empty-trash", "--why", "tmpfs"],
+        vec!["--empty-trash", "--all"],
+    ] {
+        let output = space().args(&args).output().unwrap();
+        assert!(!output.status.success(), "{args:?} should be rejected");
+    }
+}
+
+#[test]
+fn yes_requires_empty_trash() {
+    let output = space().arg("--yes").output().unwrap();
+    assert!(!output.status.success());
+}
+
+#[test]
+fn empty_trash_without_a_terminal_deletes_nothing() {
+    let home = std::env::temp_dir().join(format!("space-cli-trash-{}", std::process::id()));
+    let files = home.join(".local/share/Trash/files");
+    let mac = home.join(".Trash");
+    std::fs::create_dir_all(&files).unwrap();
+    std::fs::create_dir_all(&mac).unwrap();
+    std::fs::write(files.join("keep"), b"x").unwrap();
+    std::fs::write(mac.join("keep"), b"x").unwrap();
+    let output = space()
+        .arg("--empty-trash")
+        .env("HOME", &home)
+        .env_remove("XDG_DATA_HOME")
+        .stdin(std::process::Stdio::null())
+        .output()
+        .unwrap();
+    assert!(!output.status.success());
+    assert!(String::from_utf8_lossy(&output.stderr).contains("--yes"));
+    assert!(files.join("keep").exists());
+    assert!(mac.join("keep").exists());
+    std::fs::remove_dir_all(home).unwrap();
+}
