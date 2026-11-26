@@ -2,6 +2,14 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.4.1] - 2026-11-26
+
+### ⚙️ Miscellaneous Tasks
+
+- Drop --locked from the MSRV check (Cargo.lock is not committed)
+- Track Cargo.lock
+- Drop the Windows test job
+- Stop publishing a Windows release binary
 ## [0.4.0] - 2026-11-26
 
 ### 🚀 Features
