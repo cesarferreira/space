@@ -4,8 +4,9 @@ use crate::{
 };
 use rayon::prelude::*;
 use std::{
+    collections::HashSet,
     fs,
-    path::Path,
+    path::{Path, PathBuf},
     time::{Duration, Instant},
 };
 
@@ -18,16 +19,41 @@ pub fn owning_volume_index(report: &StorageReport, path: &Path) -> Option<usize>
         .max_by_key(|(_, volume)| volume.representative_mount.components().count())
         .map(|(index, _)| index)
 }
+
+/// The space a file takes on disk. Sparse files (such as Docker's virtual disk) count
+/// only their allocated blocks, like `du`.
+fn disk_usage(m: &fs::Metadata) -> u64 {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::MetadataExt;
+        m.blocks().saturating_mul(512)
+    }
+    #[cfg(not(unix))]
+    {
+        m.len()
+    }
+}
+
 pub fn directory_size(path: &Path) -> Estimate {
-    directory_size_before(path, None)
+    directory_size_before(path, None, &HashSet::new())
 }
 
 pub fn directory_size_with_budget(path: &Path, budget: Duration) -> Estimate {
-    directory_size_before(path, Some(Instant::now() + budget))
+    directory_size_before(path, Some(Instant::now() + budget), &HashSet::new())
 }
 
-fn directory_size_before(path: &Path, deadline: Option<Instant>) -> Estimate {
-    fn walk(p: &Path, n: &mut usize, deadline: Option<Instant>) -> u64 {
+/// The size of `path`, skipping any folder in `excluded`, stopping at `deadline`.
+pub fn directory_size_before(
+    path: &Path,
+    deadline: Option<Instant>,
+    excluded: &HashSet<PathBuf>,
+) -> Estimate {
+    fn walk(
+        p: &Path,
+        n: &mut usize,
+        deadline: Option<Instant>,
+        excluded: &HashSet<PathBuf>,
+    ) -> u64 {
         if deadline.is_some_and(|limit| Instant::now() >= limit) {
             *n += 1;
             return 0;
@@ -43,15 +69,19 @@ fn directory_size_before(path: &Path, deadline: Option<Instant>) -> Estimate {
                 break;
             }
             if let Ok(e) = entry {
-                let Ok(m) = fs::symlink_metadata(e.path()) else {
+                let path = e.path();
+                if !excluded.is_empty() && excluded.contains(&path) {
+                    continue;
+                }
+                let Ok(m) = fs::symlink_metadata(&path) else {
                     *n += 1;
                     continue;
                 };
                 if !m.file_type().is_symlink() {
                     bytes += if m.is_dir() {
-                        walk(&e.path(), n, deadline)
+                        walk(&path, n, deadline, excluded)
                     } else {
-                        m.len()
+                        disk_usage(&m)
                     };
                 }
             }
@@ -59,28 +89,93 @@ fn directory_size_before(path: &Path, deadline: Option<Instant>) -> Estimate {
         bytes
     }
     let mut n = 0;
-    let b = walk(path, &mut n, deadline);
+    let b = walk(path, &mut n, deadline, excluded);
     if n == 0 {
         Estimate::exact(b)
     } else {
         Estimate::lower_bound(b, n)
     }
 }
-pub fn scan_report(report: &mut StorageReport, rules: &[Rule]) {
-    let deadline = Instant::now() + Duration::from_secs(2);
-    let found: Vec<_> = rules
+
+/// For each rule, the paths of the other rules nested inside it, so nothing is counted twice.
+pub fn nested_rule_paths(rules: &[Rule]) -> Vec<HashSet<PathBuf>> {
+    rules
+        .iter()
+        .map(|rule| {
+            rules
+                .iter()
+                .filter(|other| other.path != rule.path && other.path.starts_with(&rule.path))
+                .map(|other| other.path.clone())
+                .collect()
+        })
+        .collect()
+}
+
+/// Measure every rule that exists, in parallel, until `deadline`.
+pub fn measure(rules: &[Rule], deadline: Option<Instant>) -> Vec<(usize, Estimate)> {
+    let all: Vec<usize> = (0..rules.len()).collect();
+    measure_selected(rules, &all, deadline)
+}
+
+/// Measure the rules at `indices` that exist. Folders of any other rule nested inside
+/// a measured folder are skipped.
+pub fn measure_selected(
+    rules: &[Rule],
+    indices: &[usize],
+    deadline: Option<Instant>,
+) -> Vec<(usize, Estimate)> {
+    let nested = nested_rule_paths(rules);
+    indices
         .par_iter()
-        .filter(|r| r.path.exists())
-        .map(|r| (r, directory_size_before(&r.path, Some(deadline))))
-        .collect();
-    for (rule, estimate) in found {
-        if let Some(index) = owning_volume_index(report, &rule.path) {
-            report.storage[index].categories.push(SemanticCategory {
+        .filter(|&&i| rules[i].path.exists())
+        .map(|&i| {
+            (
+                i,
+                directory_size_before(&rules[i].path, deadline, &nested[i]),
+            )
+        })
+        .collect()
+}
+
+pub fn merge(a: &Estimate, b: &Estimate) -> Estimate {
+    Estimate {
+        bytes: a.bytes + b.bytes,
+        incomplete: a.incomplete || b.incomplete,
+        inaccessible_paths: a.inaccessible_paths + b.inaccessible_paths,
+    }
+}
+
+/// Attach the measured rules to their volumes as categories, then add "Other".
+///
+/// Rules that share a name on the same volume (such as many `node_modules` folders)
+/// become one category. When `projects_incomplete` is true, project categories are
+/// marked as lower bounds because the search for them stopped early.
+pub fn scan_report(
+    report: &mut StorageReport,
+    rules: &[Rule],
+    deadline: Option<Instant>,
+    projects_incomplete: bool,
+) {
+    for (index, mut estimate) in measure(rules, deadline) {
+        let rule = &rules[index];
+        let Some(volume) = owning_volume_index(report, &rule.path) else {
+            continue;
+        };
+        if projects_incomplete && rule.category == "Projects" {
+            estimate.incomplete = true;
+        }
+        let path = vec![rule.category.to_string(), rule.name.to_string()];
+        let categories = &mut report.storage[volume].categories;
+        if let Some(existing) = categories.iter_mut().find(|c| c.path == path) {
+            existing.estimate = merge(&existing.estimate, &estimate);
+        } else {
+            categories.push(SemanticCategory {
                 name: rule.name.into(),
-                path: vec![rule.category.into(), rule.name.into()],
+                path,
                 estimate,
                 confidence: rule.confidence,
                 reclaimability: rule.reclaimability,
+                cleanable: rule.cleanable(),
                 children: vec![],
             });
         }
@@ -90,6 +185,7 @@ pub fn scan_report(report: &mut StorageReport, rules: &[Rule]) {
         .iter_mut()
         .filter(|v| !v.categories.is_empty())
     {
+        v.categories.sort_by(|a, b| a.path.cmp(&b.path));
         let used = v.categories.iter().map(|c| c.estimate.bytes).sum();
         v.categories.push(SemanticCategory {
             name: "Other".into(),
@@ -97,7 +193,99 @@ pub fn scan_report(report: &mut StorageReport, rules: &[Rule]) {
             estimate: Estimate::exact(v.used_bytes.saturating_sub(used)),
             confidence: Confidence::Unknown,
             reclaimability: Reclaimability::Unknown,
+            cleanable: false,
             children: vec![],
         });
     }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+pub enum ProjectKind {
+    NodeModules,
+    RustTarget,
+}
+
+/// Is `dir` a folder of project build output?
+pub fn project_kind(dir: &Path) -> Option<ProjectKind> {
+    let name = dir.file_name()?.to_str()?;
+    let parent = dir.parent()?;
+    match name {
+        "node_modules" if parent.join("package.json").is_file() => Some(ProjectKind::NodeModules),
+        // Cargo writes CACHEDIR.TAG into every target folder it creates.
+        "target" if dir.join("CACHEDIR.TAG").is_file() && parent.join("Cargo.toml").is_file() => {
+            Some(ProjectKind::RustTarget)
+        }
+        _ => None,
+    }
+}
+
+const PROJECT_SEARCH_DEPTH: usize = 6;
+
+/// Find `node_modules` and Cargo `target` folders under `roots`.
+///
+/// The search skips hidden folders, folders in `skip`, and anything inside a found folder.
+/// It stops at `deadline`; the second value is true when it stopped early.
+pub fn find_projects(
+    roots: &[PathBuf],
+    skip: &[PathBuf],
+    deadline: Option<Instant>,
+) -> (Vec<(PathBuf, ProjectKind)>, bool) {
+    let mut found = vec![];
+    let mut queue: std::collections::VecDeque<(PathBuf, usize)> =
+        roots.iter().map(|r| (r.clone(), 0)).collect();
+    while let Some((dir, depth)) = queue.pop_front() {
+        if deadline.is_some_and(|limit| Instant::now() >= limit) {
+            return (found, true);
+        }
+        let Ok(rd) = fs::read_dir(&dir) else {
+            continue;
+        };
+        for entry in rd.flatten() {
+            let Ok(file_type) = entry.file_type() else {
+                continue;
+            };
+            if !file_type.is_dir() {
+                continue;
+            }
+            let path = entry.path();
+            if entry.file_name().to_string_lossy().starts_with('.') || skip.contains(&path) {
+                continue;
+            }
+            if let Some(kind) = project_kind(&path) {
+                found.push((path, kind));
+            } else if depth + 1 < PROJECT_SEARCH_DEPTH {
+                queue.push_back((path, depth + 1));
+            }
+        }
+    }
+    (found, false)
+}
+
+/// The `n` largest entries directly inside `path`, largest first.
+pub fn largest_entries(
+    path: &Path,
+    n: usize,
+    deadline: Option<Instant>,
+) -> Vec<(PathBuf, Estimate)> {
+    let Ok(rd) = fs::read_dir(path) else {
+        return vec![];
+    };
+    let entries: Vec<PathBuf> = rd.flatten().map(|e| e.path()).collect();
+    let mut sized: Vec<(PathBuf, Estimate)> = entries
+        .into_par_iter()
+        .filter_map(|p| {
+            let m = fs::symlink_metadata(&p).ok()?;
+            let estimate = if m.file_type().is_symlink() {
+                Estimate::exact(0)
+            } else if m.is_dir() {
+                directory_size_before(&p, deadline, &HashSet::new())
+            } else {
+                Estimate::exact(disk_usage(&m))
+            };
+            Some((p, estimate))
+        })
+        .collect();
+    sized.sort_by_key(|(_, e)| std::cmp::Reverse(e.bytes));
+    sized.truncate(n);
+    sized
 }

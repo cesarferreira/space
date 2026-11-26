@@ -84,6 +84,7 @@ fn category(name: &str, parent: &str, bytes: u64) -> SemanticCategory {
         estimate: Estimate::exact(bytes),
         confidence: Confidence::Exact,
         reclaimability: Reclaimability::Unknown,
+        cleanable: false,
         children: vec![],
     }
 }
@@ -222,4 +223,96 @@ fn unreadable_categories_are_not_shown_as_zero_bytes() {
         },
     );
     assert!(text.contains("  Trash         unreadable\n"), "{text}");
+}
+
+#[test]
+fn lower_bound_sizes_are_marked() {
+    let mut report = normalize_for_environment(container_discovery(), true);
+    let mut gradle = category("Gradle", "Developer", 900_000_000);
+    gradle.estimate = Estimate::lower_bound(900_000_000, 2);
+    report.storage[0].categories = vec![gradle, category("Other", "Other", 69_900_000_000)];
+    let options = RenderOptions {
+        ascii: false,
+        color: false,
+        width: 80,
+    };
+    let text = render_with_options(&report, false, options);
+    assert!(text.contains("  Developer     ≥ 900.0 MB\n"), "{text}");
+    let ascii = render_with_options(
+        &report,
+        false,
+        RenderOptions {
+            ascii: true,
+            ..options
+        },
+    );
+    assert!(ascii.contains(">= 900.0 MB"), "{ascii}");
+}
+
+#[test]
+fn reclaimable_lists_only_reclaimable_categories_largest_first() {
+    let mut report = normalize_for_environment(container_discovery(), true);
+    let mut gradle = category("Gradle", "Developer", 900_000_000);
+    gradle.reclaimability = Reclaimability::Cache;
+    gradle.cleanable = true;
+    let mut trash = category("Trash", "Trash", 2_000_000_000);
+    trash.reclaimability = Reclaimability::PossiblyRemovable;
+    trash.cleanable = true;
+    let mut rustup = category("Rustup", "Developer", 1_000_000_000);
+    rustup.reclaimability = Reclaimability::PossiblyRemovable;
+    let mut docs = category("Documents", "Personal", 5_000_000_000);
+    docs.reclaimability = Reclaimability::UserOwned;
+    report.storage[0].categories = vec![gradle, trash, rustup, docs];
+
+    let summary = space::output::reclaimable::summarize(&report);
+    let names: Vec<_> = summary.items.iter().map(|i| i.name.as_str()).collect();
+    assert_eq!(names, ["Trash", "Rustup", "Gradle"]);
+    assert_eq!(summary.total_bytes, 3_900_000_000);
+    assert_eq!(summary.cleanable_bytes, 2_900_000_000);
+    assert_eq!(
+        summary.items[0].clean_command.as_deref(),
+        Some("space --empty-trash")
+    );
+    assert_eq!(
+        summary.items[2].clean_command.as_deref(),
+        Some("space --clean gradle")
+    );
+
+    let text = space::output::reclaimable::render_terminal(
+        &report,
+        RenderOptions {
+            ascii: false,
+            color: false,
+            width: 80,
+        },
+    );
+    assert!(text.contains("space --why rustup"), "{text}");
+    assert!(text.contains("3.9 GB"), "{text}");
+    assert!(text.lines().all(|l| l.chars().count() <= 80), "{text}");
+}
+
+#[test]
+fn long_child_names_keep_sizes_aligned_and_empty_folders_are_hidden() {
+    let mut report = normalize_for_environment(container_discovery(), true);
+    report.storage[0].categories = vec![
+        category("node_modules", "Projects", 556_700_000),
+        category("Ollama", "AI", 0),
+        category("Other", "Other", 70_200_000_000),
+    ];
+    let text = render_with_options(
+        &report,
+        false,
+        RenderOptions {
+            ascii: false,
+            color: false,
+            width: 80,
+        },
+    );
+    assert!(
+        text.contains(
+            "  Projects        556.7 MB\n    node_modules  556.7 MB\n  Other           70.2 GB\n"
+        ),
+        "{text}"
+    );
+    assert!(!text.contains("Ollama"), "{text}");
 }

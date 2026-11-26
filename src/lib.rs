@@ -1,7 +1,9 @@
 pub mod app;
 pub mod classify;
+pub mod clean;
 pub mod cli;
 pub mod explain;
+pub mod history;
 pub mod model;
 pub mod output;
 pub mod platform;

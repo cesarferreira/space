@@ -1,12 +1,16 @@
-//! The current user's trash: where it lives, how big it is, and how to empty it.
+//! The user's trashes: where they live, how big they are, and how to empty them.
 //!
-//! - macOS: `~/.Trash`
+//! - macOS: `~/.Trash`, plus `/Volumes/<name>/.Trashes/<uid>` on other volumes.
 //! - Linux and other freedesktop systems: `$XDG_DATA_HOME/Trash`
-//!   (default `~/.local/share/Trash`), with `files/` and `info/` subdirectories.
-//!
-//! Per-volume trashes (`/Volumes/X/.Trashes`, `/mnt/x/.Trash-$UID`) are not handled.
+//!   (default `~/.local/share/Trash`), plus `<mount>/.Trash/<uid>` and
+//!   `<mount>/.Trash-<uid>` on other mounts. Each has `files/` and `info/` folders.
 
-use crate::{model::Estimate, output::terminal::format_bytes, scan::directory_size};
+use crate::{
+    clean::{confirm, remove_path},
+    model::Estimate,
+    output::terminal::format_bytes,
+    scan::{directory_size, merge},
+};
 use anyhow::{Result, bail};
 use std::{
     fs, io,
@@ -16,7 +20,7 @@ use std::{
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Layout {
-    /// A flat directory of trashed items (macOS `~/.Trash`).
+    /// A flat directory of trashed items (macOS).
     Flat,
     /// The freedesktop.org layout: `files/`, `info/`, `expunged/`, `directorysizes`.
     FreeDesktop,
@@ -67,6 +71,21 @@ impl Trash {
         } else {
             None
         }
+    }
+
+    /// The home trash plus every existing per-volume trash on `mounts`.
+    pub fn detect_all(mounts: &[PathBuf]) -> Vec<Self> {
+        let mut trashes: Vec<Self> = Self::detect().into_iter().collect();
+        if let Some(uid) = current_uid() {
+            for mount in mounts {
+                for trash in volume_trashes(mount, uid, cfg!(target_os = "macos")) {
+                    if !trashes.iter().any(|t| t.path == trash.path) {
+                        trashes.push(trash);
+                    }
+                }
+            }
+        }
+        trashes
     }
 
     pub fn size(&self) -> Estimate {
@@ -123,12 +142,7 @@ impl Trash {
     pub fn empty(&self) -> io::Result<EmptyOutcome> {
         let mut outcome = EmptyOutcome::default();
         for path in self.entries()? {
-            let result = match fs::symlink_metadata(&path) {
-                Ok(m) if m.is_dir() => fs::remove_dir_all(&path),
-                Ok(_) => fs::remove_file(&path),
-                Err(e) => Err(e),
-            };
-            match result {
+            match remove_path(&path) {
                 Ok(()) => outcome.removed += 1,
                 Err(e) if e.kind() == io::ErrorKind::NotFound => {}
                 Err(e) => outcome.failures.push((path, e)),
@@ -136,6 +150,65 @@ impl Trash {
         }
         Ok(outcome)
     }
+}
+
+#[cfg(unix)]
+fn current_uid() -> Option<u32> {
+    Some(unsafe { libc::getuid() })
+}
+
+#[cfg(not(unix))]
+fn current_uid() -> Option<u32> {
+    None
+}
+
+/// The existing trashes that user `uid` has on the volume mounted at `mount`.
+pub fn volume_trashes(mount: &Path, uid: u32, macos: bool) -> Vec<Trash> {
+    if macos {
+        if !mount.starts_with("/Volumes") {
+            return vec![];
+        }
+        let path = mount.join(".Trashes").join(uid.to_string());
+        return if path.is_dir() {
+            vec![Trash {
+                path,
+                layout: Layout::Flat,
+            }]
+        } else {
+            vec![]
+        };
+    }
+    let mut found = vec![];
+    // `$topdir/.Trash` must be a real directory with the sticky bit (freedesktop spec).
+    let shared = mount.join(".Trash");
+    if is_sticky_dir(&shared) {
+        let path = shared.join(uid.to_string());
+        if path.is_dir() {
+            found.push(Trash {
+                path,
+                layout: Layout::FreeDesktop,
+            });
+        }
+    }
+    let personal = mount.join(format!(".Trash-{uid}"));
+    if personal.is_dir() {
+        found.push(Trash {
+            path: personal,
+            layout: Layout::FreeDesktop,
+        });
+    }
+    found
+}
+
+#[cfg(unix)]
+fn is_sticky_dir(path: &Path) -> bool {
+    use std::os::unix::fs::PermissionsExt;
+    fs::symlink_metadata(path).is_ok_and(|m| m.is_dir() && m.permissions().mode() & 0o1000 != 0)
+}
+
+#[cfg(not(unix))]
+fn is_sticky_dir(_: &Path) -> bool {
+    false
 }
 
 fn access_error(trash: &Trash, e: io::Error) -> anyhow::Error {
@@ -148,67 +221,79 @@ fn access_error(trash: &Trash, e: io::Error) -> anyhow::Error {
     anyhow::anyhow!("cannot read {}: {e}{hint}", trash.path.display())
 }
 
-/// Show what is in the trash, ask for confirmation, and empty it.
+fn size_text(size: &Estimate) -> String {
+    let bytes = format_bytes(size.bytes);
+    if size.incomplete {
+        format!("at least {bytes}")
+    } else {
+        bytes
+    }
+}
+
+/// Show what is in the trashes, ask for confirmation, and empty them.
 ///
 /// Without `assume_yes`, the user must answer `y` or `yes`. When `interactive` is false
 /// (stdin is not a terminal) and `assume_yes` is not set, nothing is deleted.
 pub fn confirm_and_empty(
-    trash: &Trash,
+    trashes: &[Trash],
     assume_yes: bool,
     interactive: bool,
     input: &mut impl BufRead,
     out: &mut impl Write,
 ) -> Result<()> {
-    let items = trash.item_count().map_err(|e| access_error(trash, e))?;
-    if items == 0
-        && trash
+    let mut full = vec![];
+    for trash in trashes {
+        let items = trash.item_count().map_err(|e| access_error(trash, e))?;
+        let has_entries = !trash
             .entries()
             .map_err(|e| access_error(trash, e))?
-            .is_empty()
-    {
-        writeln!(out, "Trash is already empty ({}).", trash.path.display())?;
+            .is_empty();
+        if items > 0 || has_entries {
+            full.push((trash, items, trash.size()));
+        }
+    }
+    if full.is_empty() {
+        let paths: Vec<_> = trashes
+            .iter()
+            .map(|t| t.path.display().to_string())
+            .collect();
+        writeln!(out, "Trash is already empty ({}).", paths.join(", "))?;
         return Ok(());
     }
-    let size = trash.size();
-    let plural = if items == 1 { "item" } else { "items" };
-    let bytes = format_bytes(size.bytes);
-    let bytes = if size.incomplete {
-        format!("at least {bytes}")
-    } else {
-        bytes
-    };
-    writeln!(
+    let mut total = Estimate::exact(0);
+    for (trash, items, size) in &full {
+        let plural = if *items == 1 { "item" } else { "items" };
+        writeln!(
+            out,
+            "Trash: {items} {plural}, {} ({})",
+            size_text(size),
+            trash.path.display()
+        )?;
+        total = merge(&total, size);
+    }
+
+    if !confirm(
+        "Permanently delete everything in the trash?",
+        assume_yes,
+        interactive,
+        input,
         out,
-        "Trash: {items} {plural}, {bytes} ({})",
-        trash.path.display()
-    )?;
-
-    if !assume_yes {
-        if !interactive {
-            bail!(
-                "refusing to empty the trash without confirmation; pass --yes to skip the prompt"
-            );
-        }
-        write!(out, "Permanently delete everything in the trash? [y/N] ")?;
-        out.flush()?;
-        let mut answer = String::new();
-        input.read_line(&mut answer)?;
-        if !matches!(answer.trim().to_lowercase().as_str(), "y" | "yes") {
-            writeln!(out, "Aborted. Nothing was deleted.")?;
-            return Ok(());
-        }
-    }
-
-    let outcome = trash.empty().map_err(|e| access_error(trash, e))?;
-    if outcome.failures.is_empty() {
-        writeln!(out, "Emptied the trash. Freed {bytes}.")?;
+    )? {
+        writeln!(out, "Aborted. Nothing was deleted.")?;
         return Ok(());
     }
-    for (path, e) in &outcome.failures {
-        writeln!(out, "  could not delete {}: {e}", path.display())?;
+
+    let mut failures = 0;
+    for (trash, _, _) in &full {
+        let outcome = trash.empty().map_err(|e| access_error(trash, e))?;
+        for (path, e) in &outcome.failures {
+            writeln!(out, "  could not delete {}: {e}", path.display())?;
+        }
+        failures += outcome.failures.len();
     }
-    bail!(
-        "emptied the trash partially: {} failed to delete",
-        outcome.failures.len()
-    )
+    if failures == 0 {
+        writeln!(out, "Emptied the trash. Freed {}.", size_text(&total))?;
+        return Ok(());
+    }
+    bail!("emptied the trash partially: {failures} failed to delete")
 }

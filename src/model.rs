@@ -27,6 +27,28 @@ pub struct Estimate {
     pub incomplete: bool,
     pub inaccessible_paths: usize,
 }
+impl Reclaimability {
+    /// Whether this data is worth listing as reclaimable space.
+    pub fn is_reclaimable(self) -> bool {
+        matches!(
+            self,
+            Self::Cache | Self::Generated | Self::Temporary | Self::Stale | Self::PossiblyRemovable
+        )
+    }
+
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Required => "required",
+            Self::UserOwned => "your files",
+            Self::Cache => "cache",
+            Self::Generated => "generated",
+            Self::Temporary => "temporary",
+            Self::Stale => "stale",
+            Self::PossiblyRemovable => "review first",
+            Self::Unknown => "unknown",
+        }
+    }
+}
 impl Estimate {
     pub fn exact(bytes: u64) -> Self {
         Self {
@@ -50,6 +72,8 @@ pub struct SemanticCategory {
     pub estimate: Estimate,
     pub confidence: Confidence,
     pub reclaimability: Reclaimability,
+    /// Whether `space --clean` (or `--empty-trash`) can free this category.
+    pub cleanable: bool,
     pub children: Vec<Self>,
 }
 #[derive(Debug, Clone, PartialEq, Serialize)]

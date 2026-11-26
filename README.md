@@ -60,7 +60,7 @@ technically detailed but useless answer.
 cargo install space-cli
 ```
 
-That installs the `space` binary. Rust 1.85 or newer is required.
+That installs the `space` binary. Rust 1.88 or newer is required.
 
 ### From source
 
@@ -82,29 +82,27 @@ Show every hidden or derived mount:
 space --all
 ```
 
-Explain a mount or filesystem type:
+Explain a mount, a filesystem type, or a folder category. For a category,
+`space` shows where it is, what it holds, whether it is safe to delete, its
+largest entries, and how to clean it:
 
 ```bash
 space --why tmpfs
 space --why /dev
+space --why gradle
+space --why node_modules --top 10
 ```
 
-Skip semantic directory scanning for an instant capacity overview:
+Skip semantic directory scanning for an instant capacity overview, or give the
+scan more time on a large home folder (the default is 2 seconds):
 
 ```bash
 space --no-scan
+space --scan-timeout 10
 ```
 
-Empty the trash (`~/.Trash` on macOS, `~/.local/share/Trash` on Linux). `space`
-shows how many items and bytes it holds, then asks before deleting anything:
-
-```bash
-space --empty-trash
-space --empty-trash --yes   # skip the prompt, e.g. in scripts
-```
-
-Without a terminal on stdin, `--empty-trash` refuses to delete unless you pass
-`--yes`.
+Sizes that the scan could not finish in time, or could not fully read, are
+shown as lower bounds, such as `≥ 3.4 GB`.
 
 Emit machine-readable output:
 
@@ -112,6 +110,100 @@ Emit machine-readable output:
 space --json
 space --json --no-scan
 ```
+
+### Find space to free
+
+List caches, build output, and other reclaimable data, largest first:
+
+```bash
+space --reclaimable
+space --reclaimable --json
+```
+
+```text
+Reclaimable space
+
+  Gradle            4.0 GB  cache         space --clean gradle
+  Trash             2.1 GB  review first  space --empty-trash
+  node_modules      1.8 GB  generated     space --clean node_modules
+  Android           1.5 GB  review first  space --why android
+
+  Total             9.4 GB  7.9 GB can be cleaned by space
+```
+
+"Review first" means the folder may hold something you want; `space --why`
+explains what to check.
+
+### Clean up
+
+Delete caches and build output by category name, or a whole group such as
+`developer` or `projects`. `space` shows what it will delete and its size, then
+asks before deleting anything:
+
+```bash
+space --clean gradle
+space --clean npm,pip,node_modules
+space --clean gradle --yes   # skip the prompt, e.g. in scripts
+```
+
+Empty the trash, including the trashes on other mounted volumes:
+
+```bash
+space --empty-trash
+space --empty-trash --yes
+```
+
+Without a terminal on stdin, `--clean` and `--empty-trash` refuse to delete
+unless you pass `--yes`.
+
+Some categories are never deleted by `space`, because they hold your files or
+are costly to get back: Downloads, Documents, Photos, Rustup, Android, Homebrew,
+Nix, Ollama, and Hugging Face. `space --why <category>` tells you how to clean
+them yourself. Where a tool has its own cleanup command, `space` runs it instead
+of deleting files: `pnpm store prune`, `uv cache clean`, `go clean -modcache`,
+`xcrun simctl delete unavailable`, and `docker system prune --force`.
+
+### Track changes
+
+Show what grew or shrank since the previous `--diff` run. The first run saves a
+snapshot:
+
+```bash
+space --diff
+```
+
+```text
+Changes since 2 days ago
+
+Home       +3.0 GB used  (70.8 GB → 73.8 GB)
+  Gradle         +2.0 GB
+  npm          -500.0 MB
+```
+
+### Scripts and monitoring
+
+Exit with status 3 when any volume is at least 90% full:
+
+```bash
+space --no-scan --fail-above 90
+```
+
+## Categories
+
+| Group     | Categories                                                                                                  |
+| --------- | ----------------------------------------------------------------------------------------------------------- |
+| Personal  | Downloads, Documents, Photos                                                                                |
+| Developer | Cargo, Rustup, Gradle, Maven, npm, pnpm, Yarn, pip, uv, Go modules, Go build, Android, Homebrew, Brew cache, Nix |
+| Developer (macOS) | DerivedData, iOS support, Simulators, Docker                                                        |
+| AI        | Ollama, Hugging Face                                                                                        |
+| Caches    | Everything else in `~/.cache` (Linux) or `~/Library/Caches` (macOS)                                         |
+| Projects  | `node_modules` and Rust `target` folders found under your home folder and the current folder              |
+| Trash     | `~/.Trash`, `~/.local/share/Trash`, and per-volume trashes                                                  |
+
+Sizes count the disk blocks files use, like `du`, so sparse files such as
+Docker's virtual disk are not overstated. A folder inside another category's
+folder is counted only once. The project
+search skips hidden folders and, on macOS, `~/Library`.
 
 ## JSON
 
@@ -152,14 +244,16 @@ It does not pretend those locations are physical disks.
 
 ## Safety and permissions
 
-`space` is read-only by default. The only command that deletes data is
-`--empty-trash`, and it asks for confirmation first. `space` does not repair
-filesystems, edit partitions, or require root for normal operation.
+`space` is read-only by default. Only `--clean` and `--empty-trash` delete
+data, and both ask for confirmation first. `--diff` writes one snapshot file:
+`~/.local/state/space/snapshot.json` on Linux,
+`~/Library/Application Support/space/snapshot.json` on macOS, or
+`%LOCALAPPDATA%\space\snapshot.json` on Windows. Set `SPACE_STATE_DIR` to
+use another folder. `space` does not repair filesystems, edit partitions, or
+require root for normal operation.
 
-The trash size appears with the other categories. On macOS, the Trash is
-protected by the system: if your terminal does not have Full Disk Access, the
-Trash shows as `unreadable` and cannot be emptied. Only the home trash is
-measured and emptied; per-volume trashes on external drives are not.
+On macOS, the Trash is protected by the system: if your terminal does not have
+Full Disk Access, the Trash shows as `unreadable` and cannot be emptied.
 
 Inaccessible paths produce lower-bound estimates rather than aborting the
 entire scan.
@@ -170,6 +264,8 @@ entire scan.
   and `statvfs` capacity data.
 - macOS: native mount discovery through `getmntinfo`, with structured APFS
   container enrichment from `diskutil -plist` when available.
+- Windows: drive discovery through the Win32 volume APIs. There is no Recycle
+  Bin support yet.
 
 ## Development
 

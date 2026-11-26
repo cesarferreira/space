@@ -1,4 +1,4 @@
-use crate::model::{SemanticCategory, StorageReport, StorageVolume};
+use crate::model::{Estimate, SemanticCategory, StorageReport, StorageVolume};
 use std::{collections::BTreeMap, io::IsTerminal};
 
 #[derive(Clone, Copy)]
@@ -172,17 +172,25 @@ fn volume_lines(
     format!("{heading}\n{detail}\n")
 }
 
-/// Nothing could be read, so a byte count of zero would be misleading.
-fn is_unreadable(category: &SemanticCategory) -> bool {
-    category.estimate.incomplete && category.estimate.bytes == 0
+/// A size for display: "unreadable" when nothing could be read, a `≥` prefix when
+/// the size is a lower bound (part of it could not be read or the scan ran out of time).
+pub fn format_estimate(estimate: &Estimate) -> String {
+    if estimate.incomplete && estimate.bytes == 0 {
+        "unreadable".into()
+    } else if estimate.incomplete {
+        format!("≥ {}", format_bytes(estimate.bytes))
+    } else {
+        format_bytes(estimate.bytes)
+    }
 }
 
-fn size_label(bytes: u64, unreadable: bool) -> String {
-    if unreadable {
-        "unreadable".into()
-    } else {
-        format_bytes(bytes)
-    }
+/// Replace characters a dumb terminal cannot show.
+pub fn asciify(text: String) -> String {
+    text.replace('·', "|")
+        .replace('…', "~")
+        .replace('⚠', "!")
+        .replace('≥', ">=")
+        .replace('→', "->")
 }
 
 fn category_lines(categories: &[SemanticCategory], options: RenderOptions, width: usize) -> String {
@@ -191,16 +199,30 @@ fn category_lines(categories: &[SemanticCategory], options: RenderOptions, width
     for category in categories {
         if category.path.first().map(String::as_str) == Some("Other") {
             other = Some(category);
-        } else {
+        } else if category.estimate.bytes > 0 || category.estimate.incomplete {
+            // An existing but empty folder (exactly 0 bytes) is not worth a line.
             groups.entry(&category.path[0]).or_default().push(category);
         }
     }
-    let mut out = String::new();
-    for (group, mut children) in groups {
+    for children in groups.values_mut() {
         children.sort_by_key(|child| std::cmp::Reverse(child.estimate.bytes));
-        let total: u64 = children.iter().map(|child| child.estimate.bytes).sum();
-        let unreadable = children.iter().all(|child| is_unreadable(child));
-        let line = format!("  {group:<12}  {}", size_label(total, unreadable));
+    }
+    // Line up the size column, widening it for long names such as "node_modules".
+    let child_width = groups
+        .iter()
+        .filter(|(group, children)| !matches!(children.as_slice(), [only] if only.name == **group))
+        .flat_map(|(_, children)| children.iter().take(2))
+        .map(|child| child.name.chars().count())
+        .max()
+        .unwrap_or(0)
+        .clamp(10, 16);
+    let group_width = child_width + 2;
+    let mut out = String::new();
+    for (group, children) in groups {
+        let total = children.iter().fold(Estimate::exact(0), |sum, child| {
+            crate::scan::merge(&sum, &child.estimate)
+        });
+        let line = format!("  {group:<group_width$}  {}", format_estimate(&total));
         let line = truncate(&line, width);
         let line = if options.color {
             line.replacen(group, &format!("\u{1b}[36m{group}\u{1b}[0m"), 1)
@@ -216,9 +238,9 @@ fn category_lines(categories: &[SemanticCategory], options: RenderOptions, width
         for child in children.into_iter().take(2) {
             let line = truncate(
                 &format!(
-                    "    {:<10}  {}",
+                    "    {:<child_width$}  {}",
                     child.name,
-                    size_label(child.estimate.bytes, is_unreadable(child))
+                    format_estimate(&child.estimate)
                 ),
                 width,
             );
@@ -232,18 +254,14 @@ fn category_lines(categories: &[SemanticCategory], options: RenderOptions, width
     }
     if let Some(category) = other {
         let line = format!(
-            "  {:<12}  {}",
+            "  {:<group_width$}  {}",
             category.name,
             format_bytes(category.estimate.bytes)
         );
         out.push_str(&truncate(&line, width));
         out.push('\n');
     }
-    if options.ascii {
-        out.replace('·', "|").replace('…', "~").replace('⚠', "!")
-    } else {
-        out
-    }
+    if options.ascii { asciify(out) } else { out }
 }
 
 pub fn render_with_options(report: &StorageReport, all: bool, options: RenderOptions) -> String {
@@ -319,27 +337,25 @@ pub fn render_with_options(report: &StorageReport, all: bool, options: RenderOpt
         ));
         out.push('\n');
     }
-    if options.ascii {
-        out.replace('·', "|").replace('…', "~").replace('⚠', "!")
-    } else {
-        out
-    }
+    if options.ascii { asciify(out) } else { out }
 }
 
-pub fn render(report: &StorageReport, all: bool) -> String {
+/// Options for the current terminal: `TERM=dumb` → ASCII, `NO_COLOR` or a pipe → no
+/// color, `COLUMNS` → width (default 80).
+pub fn detect_options() -> RenderOptions {
     let ascii = std::env::var("TERM").as_deref() == Ok("dumb");
     let color = !ascii && std::env::var_os("NO_COLOR").is_none() && std::io::stdout().is_terminal();
     let width = std::env::var("COLUMNS")
         .ok()
         .and_then(|value| value.parse().ok())
         .unwrap_or(80);
-    render_with_options(
-        report,
-        all,
-        RenderOptions {
-            ascii,
-            color,
-            width,
-        },
-    )
+    RenderOptions {
+        ascii,
+        color,
+        width,
+    }
+}
+
+pub fn render(report: &StorageReport, all: bool) -> String {
+    render_with_options(report, all, detect_options())
 }

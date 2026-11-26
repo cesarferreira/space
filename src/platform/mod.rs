@@ -32,6 +32,8 @@ pub struct Discovery {
 pub mod linux;
 #[cfg(target_os = "macos")]
 pub mod macos;
+#[cfg(windows)]
+pub mod windows;
 #[cfg(target_os = "linux")]
 pub fn discover() -> Result<Discovery> {
     linux::discover()
@@ -40,7 +42,11 @@ pub fn discover() -> Result<Discovery> {
 pub fn discover() -> Result<Discovery> {
     macos::discover()
 }
-#[cfg(not(any(target_os = "linux", target_os = "macos")))]
+#[cfg(windows)]
+pub fn discover() -> Result<Discovery> {
+    windows::discover()
+}
+#[cfg(not(any(target_os = "linux", target_os = "macos", windows)))]
 pub fn discover() -> Result<Discovery> {
     anyhow::bail!("unsupported operating system")
 }
