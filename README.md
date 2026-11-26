@@ -264,8 +264,9 @@ entire scan.
   and `statvfs` capacity data.
 - macOS: native mount discovery through `getmntinfo`, with structured APFS
   container enrichment from `diskutil -plist` when available.
-- Windows: drive discovery through the Win32 volume APIs. There is no Recycle
-  Bin support yet.
+- Windows: drive discovery through the Win32 volume APIs, when built from
+  source. Windows is not tested in CI, release binaries are not published for
+  it, and there is no Recycle Bin support.
 
 ## Development
 
