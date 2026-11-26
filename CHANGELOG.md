@@ -2,6 +2,11 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.4.0] - 2026-11-26
+
+### 🚀 Features
+
+- Reclaimable space, --clean, --diff, more categories, and Windows
 ## [0.3.0] - 2026-11-26
 
 ### 🚀 Features
