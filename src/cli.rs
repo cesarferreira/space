@@ -63,7 +63,7 @@ pub struct Cli {
     #[arg(long)]
     pub no_scan: bool,
     /// Seconds to spend measuring folders
-    #[arg(long, value_name = "SECONDS", default_value = "2", value_parser = seconds)]
+    #[arg(long, value_name = "SECONDS", default_value = "30", value_parser = seconds)]
     pub scan_timeout: f64,
     /// Exit with status 3 when any volume is at least PERCENT full
     #[arg(long, value_name = "PERCENT", value_parser = percent)]

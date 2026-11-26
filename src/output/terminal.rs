@@ -172,15 +172,14 @@ fn volume_lines(
     format!("{heading}\n{detail}\n")
 }
 
-/// A size for display: "unreadable" when nothing could be read, a `≥` prefix when
-/// the size is a lower bound (part of it could not be read or the scan ran out of time).
+/// Show a lower bound for a partial size, or the reason no size could be measured.
 pub fn format_estimate(estimate: &Estimate) -> String {
-    if estimate.incomplete && estimate.bytes == 0 {
-        "unreadable".into()
-    } else if estimate.incomplete {
-        format!("≥ {}", format_bytes(estimate.bytes))
-    } else {
-        format_bytes(estimate.bytes)
+    match (estimate.incomplete, estimate.bytes) {
+        (false, bytes) => format_bytes(bytes),
+        (true, 0) if estimate.timed_out => "scan timed out".into(),
+        (true, 0) if estimate.inaccessible_paths > 0 => "unreadable".into(),
+        (true, 0) => "scan incomplete".into(),
+        (true, bytes) => format!("≥ {}", format_bytes(bytes)),
     }
 }
 
@@ -191,6 +190,43 @@ pub fn asciify(text: String) -> String {
         .replace('⚠', "!")
         .replace('≥', ">=")
         .replace('→', "->")
+}
+
+pub fn section_lines(
+    group: &str,
+    total: Option<&Estimate>,
+    children: &[(&str, &Estimate)],
+    child_width: usize,
+    options: RenderOptions,
+) -> String {
+    let width = options.width.clamp(1, 100);
+    let group_width = child_width + 2;
+    let line = match total {
+        Some(size) => format!("  {group:<group_width$}  {}", format_estimate(size)),
+        None => format!("  {group}"),
+    };
+    let line = truncate(&line, width);
+    let mut out = if options.color {
+        line.replacen(group, &format!("\u{1b}[36m{group}\u{1b}[0m"), 1)
+    } else {
+        line
+    };
+    // A group with one same-named child (e.g. Trash) needs no detail line.
+    if !matches!(children, [(name, _)] if *name == group) {
+        for (name, size) in children.iter().take(2) {
+            let line = truncate(
+                &format!("    {name:<child_width$}  {}", format_estimate(size)),
+                width,
+            );
+            out.push('\n');
+            if options.color {
+                out.push_str(&format!("\u{1b}[2m{line}\u{1b}[0m"));
+            } else {
+                out.push_str(&line);
+            }
+        }
+    }
+    out
 }
 
 fn category_lines(categories: &[SemanticCategory], options: RenderOptions, width: usize) -> String {
@@ -222,35 +258,19 @@ fn category_lines(categories: &[SemanticCategory], options: RenderOptions, width
         let total = children.iter().fold(Estimate::exact(0), |sum, child| {
             crate::scan::merge(&sum, &child.estimate)
         });
-        let line = format!("  {group:<group_width$}  {}", format_estimate(&total));
-        let line = truncate(&line, width);
-        let line = if options.color {
-            line.replacen(group, &format!("\u{1b}[36m{group}\u{1b}[0m"), 1)
-        } else {
-            line
-        };
-        out.push_str(&line);
+        let children: Vec<_> = children
+            .iter()
+            .take(2)
+            .map(|child| (child.name.as_str(), &child.estimate))
+            .collect();
+        out.push_str(&section_lines(
+            group,
+            Some(&total),
+            &children,
+            child_width,
+            options,
+        ));
         out.push('\n');
-        // A group with one same-named child (e.g. Trash) needs no detail line.
-        if matches!(children.as_slice(), [only] if only.name == group) {
-            continue;
-        }
-        for child in children.into_iter().take(2) {
-            let line = truncate(
-                &format!(
-                    "    {:<child_width$}  {}",
-                    child.name,
-                    format_estimate(&child.estimate)
-                ),
-                width,
-            );
-            if options.color {
-                out.push_str(&format!("\u{1b}[2m{line}\u{1b}[0m\n"));
-            } else {
-                out.push_str(&line);
-                out.push('\n');
-            }
-        }
     }
     if let Some(category) = other {
         let line = format!(
@@ -264,7 +284,7 @@ fn category_lines(categories: &[SemanticCategory], options: RenderOptions, width
     if options.ascii { asciify(out) } else { out }
 }
 
-pub fn render_with_options(report: &StorageReport, all: bool, options: RenderOptions) -> String {
+pub fn volume_headers(report: &StorageReport, options: RenderOptions) -> Vec<String> {
     let width = options.width.clamp(1, 100);
     let name_width = report
         .storage
@@ -283,15 +303,18 @@ pub fn render_with_options(report: &StorageReport, all: bool, options: RenderOpt
         })
         .max()
         .unwrap_or(0);
+    report
+        .storage
+        .iter()
+        .map(|volume| volume_lines(volume, options, width, name_width, capacity_width))
+        .collect()
+}
+
+pub fn render_with_options(report: &StorageReport, all: bool, options: RenderOptions) -> String {
+    let width = options.width.clamp(1, 100);
     let mut out = String::new();
-    for volume in &report.storage {
-        out.push_str(&volume_lines(
-            volume,
-            options,
-            width,
-            name_width,
-            capacity_width,
-        ));
+    for (volume, header) in report.storage.iter().zip(volume_headers(report, options)) {
+        out.push_str(&header);
         if !volume.categories.is_empty() {
             out.push('\n');
             out.push_str(&category_lines(&volume.categories, options, width));

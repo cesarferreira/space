@@ -93,16 +93,18 @@ space --why gradle
 space --why node_modules --top 10
 ```
 
-Skip semantic directory scanning for an instant capacity overview, or give the
-scan more time on a large home folder (the default is 2 seconds):
+Folder scans have a 30-second budget. The interactive overview shows disk
+capacity first, then updates each section as its folders finish scanning.
+Skip the scan for a capacity overview or set a different budget.
 
 ```bash
 space --no-scan
-space --scan-timeout 10
+space --scan-timeout 60
 ```
 
-Sizes that the scan could not finish in time, or could not fully read, are
-shown as lower bounds, such as `≥ 3.4 GB`.
+Partial sizes appear as lower bounds, such as `≥ 3.4 GB`. If the scan measures
+no bytes, `scan timed out` indicates that it reached the time limit, and
+`unreadable` indicates a filesystem read error.
 
 Emit machine-readable output:
 

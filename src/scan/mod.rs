@@ -50,51 +50,48 @@ pub fn directory_size_before(
 ) -> Estimate {
     fn walk(
         p: &Path,
-        n: &mut usize,
+        estimate: &mut Estimate,
         deadline: Option<Instant>,
         excluded: &HashSet<PathBuf>,
-    ) -> u64 {
+    ) {
         if deadline.is_some_and(|limit| Instant::now() >= limit) {
-            *n += 1;
-            return 0;
+            estimate.timed_out = true;
+            return;
         }
         let Ok(rd) = fs::read_dir(p) else {
-            *n += 1;
-            return 0;
+            estimate.inaccessible_paths += 1;
+            return;
         };
-        let mut bytes = 0;
         for entry in rd {
             if deadline.is_some_and(|limit| Instant::now() >= limit) {
-                *n += 1;
-                break;
+                estimate.timed_out = true;
+                return;
             }
-            if let Ok(e) = entry {
-                let path = e.path();
-                if !excluded.is_empty() && excluded.contains(&path) {
-                    continue;
-                }
-                let Ok(m) = fs::symlink_metadata(&path) else {
-                    *n += 1;
-                    continue;
-                };
-                if !m.file_type().is_symlink() {
-                    bytes += if m.is_dir() {
-                        walk(&path, n, deadline, excluded)
-                    } else {
-                        disk_usage(&m)
-                    };
+            let Ok(entry) = entry else {
+                estimate.inaccessible_paths += 1;
+                continue;
+            };
+            let path = entry.path();
+            if !excluded.is_empty() && excluded.contains(&path) {
+                continue;
+            }
+            let Ok(m) = fs::symlink_metadata(&path) else {
+                estimate.inaccessible_paths += 1;
+                continue;
+            };
+            if !m.file_type().is_symlink() {
+                if m.is_dir() {
+                    walk(&path, estimate, deadline, excluded);
+                } else {
+                    estimate.bytes += disk_usage(&m);
                 }
             }
         }
-        bytes
     }
-    let mut n = 0;
-    let b = walk(path, &mut n, deadline, excluded);
-    if n == 0 {
-        Estimate::exact(b)
-    } else {
-        Estimate::lower_bound(b, n)
-    }
+    let mut estimate = Estimate::exact(0);
+    walk(path, &mut estimate, deadline, excluded);
+    estimate.incomplete = estimate.timed_out || estimate.inaccessible_paths > 0;
+    estimate
 }
 
 /// For each rule, the paths of the other rules nested inside it, so nothing is counted twice.
@@ -124,15 +121,26 @@ pub fn measure_selected(
     indices: &[usize],
     deadline: Option<Instant>,
 ) -> Vec<(usize, Estimate)> {
+    measure_with_progress(rules, indices, deadline, &|_, _| {})
+}
+
+pub(crate) fn measure_with_progress(
+    rules: &[Rule],
+    indices: &[usize],
+    deadline: Option<Instant>,
+    on_finished: &(impl Fn(&Rule, Option<&Estimate>) + Sync),
+) -> Vec<(usize, Estimate)> {
     let nested = nested_rule_paths(rules);
     indices
         .par_iter()
-        .filter(|&&i| rules[i].path.exists())
-        .map(|&i| {
-            (
-                i,
-                directory_size_before(&rules[i].path, deadline, &nested[i]),
-            )
+        .filter_map(|&i| {
+            let rule = &rules[i];
+            let estimate = rule
+                .path
+                .exists()
+                .then(|| directory_size_before(&rule.path, deadline, &nested[i]));
+            on_finished(rule, estimate.as_ref());
+            estimate.map(|estimate| (i, estimate))
         })
         .collect()
 }
@@ -142,6 +150,7 @@ pub fn merge(a: &Estimate, b: &Estimate) -> Estimate {
         bytes: a.bytes + b.bytes,
         incomplete: a.incomplete || b.incomplete,
         inaccessible_paths: a.inaccessible_paths + b.inaccessible_paths,
+        timed_out: a.timed_out || b.timed_out,
     }
 }
 
@@ -156,13 +165,23 @@ pub fn scan_report(
     deadline: Option<Instant>,
     projects_incomplete: bool,
 ) {
-    for (index, mut estimate) in measure(rules, deadline) {
+    attach_estimates(report, rules, measure(rules, deadline), projects_incomplete);
+}
+
+pub(crate) fn attach_estimates(
+    report: &mut StorageReport,
+    rules: &[Rule],
+    sizes: impl IntoIterator<Item = (usize, Estimate)>,
+    projects_incomplete: bool,
+) {
+    for (index, mut estimate) in sizes {
         let rule = &rules[index];
         let Some(volume) = owning_volume_index(report, &rule.path) else {
             continue;
         };
         if projects_incomplete && rule.category == "Projects" {
             estimate.incomplete = true;
+            estimate.timed_out = true;
         }
         let path = vec![rule.category.to_string(), rule.name.to_string()];
         let categories = &mut report.storage[volume].categories;

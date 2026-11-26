@@ -107,6 +107,28 @@ fn scratch(name: &str) -> std::path::PathBuf {
 }
 
 #[test]
+fn scan_timeout_does_not_report_readable_folders_as_unreadable() {
+    let home = scratch("scan-timeout");
+    std::fs::create_dir_all(home.join(".cache/huggingface")).unwrap();
+    std::fs::write(home.join(".cache/huggingface/blob"), b"model").unwrap();
+    let output = space()
+        .args(["--scan-timeout", "0.0000000001"])
+        .env("HOME", &home)
+        .env("COLUMNS", "80")
+        .current_dir(&home)
+        .output()
+        .unwrap();
+    std::fs::remove_dir_all(home).unwrap();
+    assert!(output.status.success(), "{output:?}");
+    let text = String::from_utf8(output.stdout).unwrap();
+    let size = text
+        .lines()
+        .find_map(|line| line.trim_start().strip_prefix("Hugging Face"))
+        .map(str::trim);
+    assert_eq!(size, Some("scan timed out"), "{text}");
+}
+
+#[test]
 fn fail_above_exits_with_status_three() {
     let output = space()
         .args(["--no-scan", "--fail-above", "0"])

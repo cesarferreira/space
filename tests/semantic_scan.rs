@@ -17,5 +17,7 @@ fn exhausted_budget_returns_an_incomplete_lower_bound() {
     fs::write(root.join("file"), vec![0; 123]).unwrap();
     let estimate = space::scan::directory_size_with_budget(&root, Duration::ZERO);
     assert!(estimate.incomplete);
+    assert!(estimate.timed_out);
+    assert_eq!(estimate.inaccessible_paths, 0);
     fs::remove_dir_all(root).unwrap();
 }

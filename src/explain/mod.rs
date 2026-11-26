@@ -36,10 +36,20 @@ pub fn category(
     top: usize,
     deadline: Option<std::time::Instant>,
 ) -> Option<String> {
+    category_with_progress(rules, query, top, deadline, &|_, _| {})
+}
+
+pub(crate) fn category_with_progress(
+    rules: &[crate::classify::Rule],
+    query: &str,
+    top: usize,
+    deadline: Option<std::time::Instant>,
+    on_finished: &(impl Fn(&crate::classify::Rule, Option<&crate::model::Estimate>) + Sync),
+) -> Option<String> {
     use crate::{
         classify::slug,
         output::terminal::format_estimate,
-        scan::{largest_entries, measure_selected, merge},
+        scan::{largest_entries, measure_with_progress, merge},
     };
     let wanted = slug(query);
     let matching: Vec<usize> = (0..rules.len())
@@ -49,7 +59,7 @@ pub fn category(
         return None;
     }
     let sizes: std::collections::BTreeMap<usize, crate::model::Estimate> =
-        measure_selected(rules, &matching, deadline)
+        measure_with_progress(rules, &matching, deadline, on_finished)
             .into_iter()
             .collect();
 

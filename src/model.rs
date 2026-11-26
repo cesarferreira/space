@@ -26,6 +26,8 @@ pub struct Estimate {
     pub bytes: u64,
     pub incomplete: bool,
     pub inaccessible_paths: usize,
+    /// The scan or project discovery reached its deadline.
+    pub timed_out: bool,
 }
 impl Reclaimability {
     /// Whether this data is worth listing as reclaimable space.
@@ -55,6 +57,7 @@ impl Estimate {
             bytes,
             incomplete: false,
             inaccessible_paths: 0,
+            timed_out: false,
         }
     }
     pub fn lower_bound(bytes: u64, inaccessible_paths: usize) -> Self {
@@ -62,6 +65,7 @@ impl Estimate {
             bytes,
             incomplete: true,
             inaccessible_paths,
+            timed_out: false,
         }
     }
 }

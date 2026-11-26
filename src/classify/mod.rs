@@ -233,6 +233,23 @@ pub fn project_rule(path: PathBuf, kind: crate::scan::ProjectKind) -> Rule {
     }
 }
 
+pub(crate) fn known_folders(home: &Path, mounts: &[PathBuf]) -> Vec<Rule> {
+    let mut rules = static_rules(home);
+    rules.extend(Trash::detect_all(mounts).into_iter().map(trash_rule));
+    rules
+}
+
+/// Find rules for an explanation. Only project queries need project discovery.
+pub fn rules_for_query(mounts: &[PathBuf], query: &str, deadline: Option<Instant>) -> Vec<Rule> {
+    let query = slug(query);
+    if query == "projects" || query == NODE_MODULES || query == slug(RUST_TARGET) {
+        return known_rules(mounts, deadline).0;
+    }
+    home_dir()
+        .map(|home| known_folders(&home, mounts))
+        .unwrap_or_default()
+}
+
 /// Every rule for this machine: static rules, all trashes on `mounts`, and project folders.
 ///
 /// The project search stops at `deadline`; the second value is true when it stopped early.
@@ -240,25 +257,36 @@ pub fn known_rules(mounts: &[PathBuf], deadline: Option<Instant>) -> (Vec<Rule>,
     let Some(home) = home_dir() else {
         return (vec![], false);
     };
-    let mut rules = static_rules(&home);
-    rules.extend(Trash::detect_all(mounts).into_iter().map(trash_rule));
-    let mut roots = vec![home.clone()];
-    if let Ok(cwd) = std::env::current_dir()
-        && cwd.parent().is_some()
-        && !cwd.starts_with(&home)
-    {
-        roots.push(cwd);
-    }
-    let skip: Vec<PathBuf> = rules
+    let mut rules = known_folders(&home, mounts);
+    let (projects, timed_out) = project_rules(&home, &rules, deadline);
+    rules.extend(projects);
+    (rules, timed_out)
+}
+
+pub(crate) fn project_rules(
+    home: &Path,
+    known: &[Rule],
+    deadline: Option<Instant>,
+) -> (Vec<Rule>, bool) {
+    let skip: Vec<PathBuf> = known
         .iter()
         .map(|r| r.path.clone())
         .chain(cfg!(target_os = "macos").then(|| home.join("Library")))
         .collect();
+    let mut roots = vec![home.to_path_buf()];
+    if let Ok(cwd) = std::env::current_dir()
+        && cwd.parent().is_some()
+        && !cwd.starts_with(home)
+    {
+        roots.push(cwd);
+    }
+    roots.retain(|root| !skip.iter().any(|path| root.starts_with(path)));
     let (projects, timed_out) = crate::scan::find_projects(&roots, &skip, deadline);
-    rules.extend(
+    (
         projects
             .into_iter()
-            .map(|(path, kind)| project_rule(path, kind)),
-    );
-    (rules, timed_out)
+            .map(|(path, kind)| project_rule(path, kind))
+            .collect(),
+        timed_out,
+    )
 }
