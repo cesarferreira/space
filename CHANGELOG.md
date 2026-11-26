@@ -2,7 +2,9 @@
 
 All notable changes to this project will be documented in this file.
 
-## [Unreleased]
+## [0.4.2] - 2026-11-27
+
+### 🐛 Bug Fixes
 
 - Offer a sudo retry when `--empty-trash` cannot delete items due to macOS permissions.
 
